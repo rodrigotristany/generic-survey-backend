@@ -71,15 +71,33 @@ uvicorn app.main:app --reload --port 8000
 
 Interactive docs available at `http://localhost:8000/docs`.
 
-## Docker
+## Docker Compose (recommended)
 
 ```bash
-# Build the image
-docker build -t generic-survey-backend .
+cp .env.example .env
+# Set SECRET_KEY to a long random string in .env
 
-# Run (requires a Postgres instance)
-docker run --env-file .env -p 8000:8000 generic-survey-backend
+# Local development (hot-reload, code mounted as volume)
+docker compose up
+
+# Production-like (no volume mount, no reload)
+docker compose -f docker-compose.yml up --build
 ```
+
+The app container runs `alembic upgrade head` automatically before starting the server.
+
+Postgres data is persisted in the `postgres_data` Docker volume.
+
+| Service | Port |
+|---------|------|
+| API | `http://localhost:8000` |
+| Postgres | `localhost:5432` |
+
+Interactive docs at `http://localhost:8000/docs`.
+
+### Override file
+
+`docker-compose.override.yml` is picked up automatically by `docker compose up` and enables hot-reload by mounting the project directory into the container. Remove or ignore it for CI/production builds.
 
 ## Environment Variables
 
