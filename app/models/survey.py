@@ -22,9 +22,9 @@ class Survey(Base, TimestampMixin):
     status: Mapped[SurveyStatus] = mapped_column(PgEnum(SurveyStatus), default=SurveyStatus.draft, nullable=False)
     created_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("admin_users.id"), nullable=False)
 
-    questions: Mapped[list["Question"]] = relationship(
-        "Question",
+    sections: Mapped[list["Section"]] = relationship(
+        "Section",
         back_populates="survey",
         cascade="all, delete-orphan",
-        order_by="Question.order",
+        order_by="Section.order",
     )

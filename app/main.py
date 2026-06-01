@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import admin_auth, admin_surveys, public_surveys, responses, user_auth
+from app.routers import admin_auth, admin_questions, admin_surveys, public_surveys, responses, user_auth
 
 app = FastAPI(
     title="Generic Survey API",
@@ -19,6 +19,7 @@ app.add_middleware(
 
 app.include_router(admin_auth.router)
 app.include_router(user_auth.router)
+app.include_router(admin_questions.router)
 app.include_router(admin_surveys.router)
 app.include_router(public_surveys.router)
 app.include_router(responses.router)
