@@ -5,18 +5,20 @@
 | Key | Description | Example |
 |-----|-------------|---------|
 | `ENV` | Runtime environment | `local` / `dev` / `prod` |
-| `DATABASE_URL` | Async PostgreSQL connection string | `postgresql+asyncpg://user:pass@localhost:5432/survey_db` |
+| `DATABASE_URL` | Async PostgreSQL connection string | `postgresql+asyncpg://user:pass@db:5432/survey_db` |
 | `SECRET_KEY` | HMAC secret for JWT signing | `long-random-string` |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | Access token TTL | `30` |
 | `REFRESH_TOKEN_EXPIRE_DAYS` | Refresh token TTL | `7` |
 | `OTP_EXPIRE_MINUTES` | OTP code TTL | `10` |
+
+When running inside Docker Compose use `host=db`. When running locally use `host=localhost:5433` (mapped port).
 
 ---
 
 ## JWT Details
 
 - **Access token**: short-lived JWT (`ACCESS_TOKEN_EXPIRE_MINUTES`). Send in `Authorization: Bearer <token>`.
-- **Refresh token**: long-lived JWT, stored server-side as `sha256(token)` in `refresh_tokens` table. Rotate on each use.
+- **Refresh token**: long-lived JWT, stored server-side as `sha256(token)` in `refresh_tokens` table. Rotated on each use.
 - **Token type claim**: `type: "admin"` or `type: "user"` inside the access token payload.
 - **Algorithm**: HS256.
 
@@ -85,18 +87,16 @@ Body: { "email": "...", "password": "...", "full_name": "..." }
 
 Password rules: min 8 chars, uppercase, lowercase, digit, symbol.
 
-### User Login
-```
-POST /auth/login
-Body: { "email": "...", "password": "..." }
-
-200: { access_token, refresh_token, token_type: "bearer" }
-401: invalid credentials
-403: account disabled
-```
-
-### User Logout / OTP / Password Recovery / Token Refresh
+### User Login / Logout / OTP / Password Recovery / Token Refresh
 Same pattern as admin, under `/auth/*`.
+
+### Get Current User
+```
+GET /auth/me
+Authorization: Bearer <access_token>
+
+200: { id, email, full_name, enabled }
+```
 
 ---
 
@@ -111,7 +111,7 @@ Same pattern as admin, under `/auth/*`.
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | POST | `/admin/auth/login` | None | Admin login |
-| POST | `/admin/auth/logout` | Admin JWT | Admin logout, revoke refresh token |
+| POST | `/admin/auth/logout` | Admin JWT | Logout, revoke refresh token |
 | POST | `/admin/auth/otp/verify` | None | Verify OTP for 2FA |
 | POST | `/admin/auth/password-recovery/request` | None | Request password recovery OTP |
 | POST | `/admin/auth/password-recovery/confirm` | None | Confirm OTP + set new password |
@@ -129,17 +129,36 @@ Same pattern as admin, under `/auth/*`.
 | POST | `/auth/token/refresh` | None | Rotate refresh token |
 | GET | `/auth/me` | User JWT | Get current user profile |
 
+### Question Library
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/admin/questions` | Admin JWT | List questions (filter: `type`, `search`) |
+| POST | `/admin/questions` | Admin JWT | Create standalone question |
+| GET | `/admin/questions/{qid}` | Admin JWT | Get question + options |
+| PATCH | `/admin/questions/{qid}` | Admin JWT | Update text or type |
+| DELETE | `/admin/questions/{qid}` | Admin JWT | Delete (409 if in use by any group) |
+| POST | `/admin/questions/{qid}/options` | Admin JWT | Add option |
+| PATCH | `/admin/questions/{qid}/options/{oid}` | Admin JWT | Update option |
+| DELETE | `/admin/questions/{qid}/options/{oid}` | Admin JWT | Delete option |
+
 ### Admin Survey Management
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| POST | `/admin/surveys` | Admin JWT | Create survey with questions |
-| GET | `/admin/surveys` | Admin JWT | List all surveys (filterable by status) |
-| GET | `/admin/surveys/{id}` | Admin JWT | Get survey detail |
-| PATCH | `/admin/surveys/{id}` | Admin JWT | Update title, description, or status |
-| DELETE | `/admin/surveys/{id}` | Admin JWT | Delete survey (cascades) |
-| POST | `/admin/surveys/{id}/questions` | Admin JWT | Add question to survey |
-| PATCH | `/admin/surveys/{id}/questions/{qid}` | Admin JWT | Update question |
-| DELETE | `/admin/surveys/{id}/questions/{qid}` | Admin JWT | Delete question |
+| POST | `/admin/surveys` | Admin JWT | Create survey |
+| GET | `/admin/surveys` | Admin JWT | List surveys (filter: `status`) |
+| GET | `/admin/surveys/{sid}` | Admin JWT | Get full survey hierarchy |
+| PATCH | `/admin/surveys/{sid}` | Admin JWT | Update title, description, or status |
+| DELETE | `/admin/surveys/{sid}` | Admin JWT | Delete survey (cascades) |
+| POST | `/admin/surveys/{sid}/sections` | Admin JWT | Add section |
+| PATCH | `/admin/surveys/{sid}/sections/{sec_id}` | Admin JWT | Update section |
+| DELETE | `/admin/surveys/{sid}/sections/{sec_id}` | Admin JWT | Delete section (cascades) |
+| POST | `/admin/surveys/{sid}/sections/{sec_id}/groups` | Admin JWT | Add group |
+| PATCH | `/admin/surveys/{sid}/sections/{sec_id}/groups/{gid}` | Admin JWT | Update group |
+| DELETE | `/admin/surveys/{sid}/sections/{sec_id}/groups/{gid}` | Admin JWT | Delete group (cascades) |
+| POST | `/admin/surveys/{sid}/sections/{sec_id}/groups/{gid}/questions` | Admin JWT | Flow A — create question + place in group |
+| POST | `/admin/surveys/{sid}/sections/{sec_id}/groups/{gid}/questions/link` | Admin JWT | Flow B — link existing question into group |
+| PATCH | `/admin/surveys/{sid}/sections/{sec_id}/groups/{gid}/questions/{gqid}` | Admin JWT | Update placement (is_required, order) |
+| DELETE | `/admin/surveys/{sid}/sections/{sec_id}/groups/{gid}/questions/{gqid}` | Admin JWT | Remove placement (question stays in library) |
 
 ### Public Surveys
 | Method | Path | Auth | Description |
@@ -157,49 +176,318 @@ Same pattern as admin, under `/auth/*`.
 
 ---
 
+## Data Models
+
+### Survey Hierarchy
+```
+Survey
+  └── Section           (broad category, e.g. "Demographics")
+        └── SurveyGroup (sub-theme within section)
+              └── GroupQuestion  (placement: is_required + order)
+                    └── Question (reusable library entry)
+                          └── Option
+```
+
+### Enums
+
+**SurveyStatus**: `draft` | `published` | `closed`
+
+**QuestionType**: `text` | `single_choice` | `multiple_choice` | `rating` | `date`
+
+**ResponseStatus**: `in_progress` | `submitted`
+
+**AdminRole**: `superadmin` | `staff`
+
+---
+
+### Auth Models
+
+#### TokenResponse
+```json
+{
+  "access_token": "string",
+  "refresh_token": "string",
+  "token_type": "bearer"
+}
+```
+
+#### MessageResponse
+```json
+{ "message": "string" }
+```
+
+#### UserResponse
+```json
+{
+  "id": "uuid",
+  "email": "string",
+  "full_name": "string | null",
+  "enabled": true
+}
+```
+
+---
+
+### Survey Models
+
+#### OptionOut
+```json
+{
+  "id": "uuid",
+  "text": "string",
+  "order": 0
+}
+```
+
+#### QuestionOut
+```json
+{
+  "id": "uuid",
+  "text": "string",
+  "question_type": "text | single_choice | multiple_choice | rating | date",
+  "options": [OptionOut]
+}
+```
+
+#### GroupQuestionOut
+```json
+{
+  "id": "uuid",
+  "question_id": "uuid",
+  "is_required": true,
+  "order": 0,
+  "question": QuestionOut
+}
+```
+
+#### SurveyGroupOut
+```json
+{
+  "id": "uuid",
+  "title": "string",
+  "order": 0,
+  "group_questions": [GroupQuestionOut]
+}
+```
+
+#### SectionOut
+```json
+{
+  "id": "uuid",
+  "title": "string",
+  "order": 0,
+  "groups": [SurveyGroupOut]
+}
+```
+
+#### SurveyOut _(full detail, used on GET)_
+```json
+{
+  "id": "uuid",
+  "title": "string",
+  "slug": "string",
+  "description": "string | null",
+  "status": "draft | published | closed",
+  "created_by": "uuid",
+  "sections": [SectionOut]
+}
+```
+
+#### SurveyListItem _(used on list endpoints)_
+```json
+{
+  "id": "uuid",
+  "title": "string",
+  "slug": "string",
+  "status": "draft | published | closed",
+  "question_count": 0
+}
+```
+
+---
+
+### Request Bodies
+
+#### POST `/admin/surveys`
+```json
+{
+  "title": "string",
+  "description": "string | null"
+}
+```
+
+#### PATCH `/admin/surveys/{sid}`
+```json
+{
+  "title": "string?",
+  "description": "string?",
+  "status": "draft | published | closed (optional)"
+}
+```
+
+#### POST `/admin/surveys/{sid}/sections`
+```json
+{ "title": "string", "order": 0 }
+```
+
+#### PATCH `/admin/surveys/{sid}/sections/{sec_id}`
+```json
+{ "title": "string?", "order": 0 }
+```
+
+#### POST `.../groups`
+```json
+{ "title": "string", "order": 0 }
+```
+
+#### PATCH `.../groups/{gid}`
+```json
+{ "title": "string?", "order": 0 }
+```
+
+#### POST `.../groups/{gid}/questions` — Flow A (create + place)
+```json
+{
+  "text": "string",
+  "question_type": "text | single_choice | multiple_choice | rating | date",
+  "options": [{ "text": "string", "order": 0 }],
+  "is_required": true,
+  "order": 0
+}
+```
+
+#### POST `.../groups/{gid}/questions/link` — Flow B (link existing)
+```json
+{
+  "question_id": "uuid",
+  "is_required": true,
+  "order": 0
+}
+```
+
+#### PATCH `.../questions/{gqid}` — update placement only
+```json
+{ "is_required": true, "order": 0 }
+```
+
+#### POST `/admin/questions` — create standalone question
+```json
+{
+  "text": "string",
+  "question_type": "text | single_choice | multiple_choice | rating | date",
+  "options": [{ "text": "string", "order": 0 }]
+}
+```
+
+#### POST `/admin/questions/{qid}/options`
+```json
+{ "text": "string", "order": 0 }
+```
+
+---
+
+### Response Models
+
+#### AnswerInput _(used in submit body)_
+```json
+{
+  "group_question_id": "uuid",
+  "text_value": "string | null",
+  "rating_value": 0,
+  "date_value": "YYYY-MM-DD | null",
+  "selected_option_ids": ["uuid"]
+}
+```
+
+#### SubmitResponseRequest
+```json
+{ "answers": [AnswerInput] }
+```
+
+#### AnswerOut
+```json
+{
+  "id": "uuid",
+  "group_question_id": "uuid",
+  "text_value": "string | null",
+  "rating_value": "integer | null",
+  "date_value": "YYYY-MM-DD | null",
+  "selected_option_ids": ["uuid"]
+}
+```
+
+#### SurveyResponseOut
+```json
+{
+  "id": "uuid",
+  "survey_id": "uuid",
+  "user_id": "uuid | null",
+  "status": "in_progress | submitted",
+  "submitted_at": "ISO 8601 datetime | null",
+  "answers": [AnswerOut]
+}
+```
+
+---
+
+### Answer Rules
+- A required question (`is_required: true`) must have a non-empty answer
+- `date_value` is only valid when `question_type = date`
+- `selected_option_ids` is only valid for `single_choice` and `multiple_choice`
+- `single_choice` allows at most one entry in `selected_option_ids`
+
+### Question Library
+Questions are independent of surveys. The same question can be placed in multiple groups via `GroupQuestion` (the placement record). Deleting a question that is still linked to any group returns `409 Conflict`.
+
+### Survey Lifecycle
+```
+draft → published → closed
+```
+Only `published` surveys accept new responses.
+
+### Response Lifecycle
+```
+in_progress → submitted
+```
+Anonymous responses (`user_id: null`) are supported.
+
+---
+
 ## Run Commands
 
 ```bash
 # Copy and fill env
 cp .env.example .env
 
-# Install dependencies
-pip install -r requirements.txt
+# Docker Compose (recommended)
+docker compose up --build
 
-# Run database migrations
+# Create first admin user
+docker compose exec app python -m scripts.create_admin \
+  --email admin@example.com --password MyPass123! --role superadmin
+
+# Run tests (inside container)
+docker compose exec app pytest tests/ -v
+
+# Run tests (local, with DB port exposed on 5433)
+DATABASE_URL=postgresql+asyncpg://survey_user:survey_pass@localhost:5433/survey_db \
+  pytest tests/ -v
+
+# Manual migration commands
 alembic upgrade head
-
-# Start development server
-uvicorn app.main:app --reload --port 8000
-
-# Auto-generate migration after model changes
 alembic revision --autogenerate -m "describe change"
-
-# Rollback last migration
 alembic downgrade -1
-
-# Run tests
-pytest
 ```
 
 ---
 
-## Data Models
+## Docker Setup
 
-### Survey Lifecycle
-```
-draft → published → closed
-```
+| Service | Internal host | Exposed port |
+|---------|--------------|--------------|
+| API | `app:8000` | `localhost:8000` |
+| Postgres | `db:5432` | `localhost:5433` |
 
-### Question Types
-- `text` — free-text answer
-- `single_choice` — pick one option
-- `multiple_choice` — pick multiple options
-- `rating` — integer score
+`docker-compose.override.yml` is applied automatically on `docker compose up` and enables hot-reload with the project directory mounted as a volume. Omit it (or use `-f docker-compose.yml` only) for production-like builds.
 
-### Response Lifecycle
-```
-in_progress → submitted
-```
-
-Anonymous responses (`user_id = null`) are supported for published surveys.
+The app container runs `alembic upgrade head` automatically before starting.
