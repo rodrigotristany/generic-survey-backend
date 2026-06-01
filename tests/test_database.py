@@ -72,6 +72,9 @@ async def test_insert_duplicate_email_raises_integrity_error(db: AsyncSession):
     db.add(_make_user(email=email))
     with pytest.raises(IntegrityError):
         await db.flush()
+    # Reset session — PostgreSQL aborts the transaction on any error, so the
+    # session must be explicitly rolled back before teardown touches it.
+    await db.rollback()
 
 
 # ── Update ────────────────────────────────────────────────────────────────────

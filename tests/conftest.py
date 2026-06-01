@@ -24,5 +24,6 @@ async def db() -> AsyncSession:
         yield session
     finally:
         await session.close()
-        await trans.rollback()
+        if trans.is_active:
+            await trans.rollback()
         await conn.close()
