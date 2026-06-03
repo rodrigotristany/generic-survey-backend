@@ -5,6 +5,7 @@ from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database import AsyncSessionLocal
 from app.models.admin_user import AdminUser
 from app.models.survey import Survey, SurveyStatus
 from app.models.section import Section
@@ -57,7 +58,12 @@ async def list_surveys(db: AsyncSession, status_filter: SurveyStatus | None = No
 
 
 async def get_survey(db: AsyncSession, survey_id: uuid.UUID) -> SurveyOut:
-    return SurveyOut.model_validate(await _load_survey(db, survey_id))
+    async with AsyncSessionLocal() as fresh_db:
+        result = await fresh_db.execute(select(Survey).options(_full_load()).where(Survey.id == survey_id))
+        survey = result.scalar_one_or_none()
+    if not survey:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Survey not found")
+    return SurveyOut.model_validate(survey)
 
 
 async def get_survey_by_slug(db: AsyncSession, slug: str) -> SurveyOut:
@@ -78,14 +84,14 @@ async def update_survey(db: AsyncSession, survey_id: uuid.UUID, data: SurveyUpda
         survey.description = data.description
     if data.status is not None:
         survey.status = data.status
-    await db.flush()
+    await db.commit()
     return SurveyOut.model_validate(survey)
 
 
 async def delete_survey(db: AsyncSession, survey_id: uuid.UUID) -> None:
     survey = await _load_survey(db, survey_id)
     await db.delete(survey)
-    await db.flush()
+    await db.commit()
 
 
 # ── Section ──────────────────────────────────────────────────────────────────
@@ -93,7 +99,7 @@ async def delete_survey(db: AsyncSession, survey_id: uuid.UUID) -> None:
 async def create_section(db: AsyncSession, survey_id: uuid.UUID, data: SectionCreate) -> SurveyOut:
     await _get_survey_or_404(db, survey_id)
     db.add(Section(survey_id=survey_id, title=data.title, order=data.order))
-    await db.flush()
+    await db.commit()
     return await get_survey(db, survey_id)
 
 
@@ -103,14 +109,14 @@ async def update_section(db: AsyncSession, survey_id: uuid.UUID, section_id: uui
         section.title = data.title
     if data.order is not None:
         section.order = data.order
-    await db.flush()
+    await db.commit()
     return await get_survey(db, survey_id)
 
 
 async def delete_section(db: AsyncSession, survey_id: uuid.UUID, section_id: uuid.UUID) -> None:
     section = await _get_section(db, survey_id, section_id)
     await db.delete(section)
-    await db.flush()
+    await db.commit()
 
 
 # ── SurveyGroup ───────────────────────────────────────────────────────────────
@@ -118,7 +124,7 @@ async def delete_section(db: AsyncSession, survey_id: uuid.UUID, section_id: uui
 async def create_group(db: AsyncSession, survey_id: uuid.UUID, section_id: uuid.UUID, data: SurveyGroupCreate) -> SurveyOut:
     await _get_section(db, survey_id, section_id)
     db.add(SurveyGroup(section_id=section_id, title=data.title, order=data.order))
-    await db.flush()
+    await db.commit()
     return await get_survey(db, survey_id)
 
 
@@ -130,14 +136,14 @@ async def update_group(
         group.title = data.title
     if data.order is not None:
         group.order = data.order
-    await db.flush()
+    await db.commit()
     return await get_survey(db, survey_id)
 
 
 async def delete_group(db: AsyncSession, survey_id: uuid.UUID, section_id: uuid.UUID, group_id: uuid.UUID) -> None:
     group = await _get_group(db, section_id, group_id)
     await db.delete(group)
-    await db.flush()
+    await db.commit()
 
 
 # ── GroupQuestion ─────────────────────────────────────────────────────────────
@@ -157,7 +163,7 @@ async def add_question_inline(
     for opt in data.options:
         db.add(Option(question_id=question.id, text=opt.text, order=opt.order))
     db.add(GroupQuestion(group_id=group_id, question_id=question.id, is_required=data.is_required, order=data.order))
-    await db.flush()
+    await db.commit()
     return await get_survey(db, survey_id)
 
 
@@ -174,7 +180,7 @@ async def link_question(
     if not question:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Question not found in library")
     db.add(GroupQuestion(group_id=group_id, question_id=data.question_id, is_required=data.is_required, order=data.order))
-    await db.flush()
+    await db.commit()
     return await get_survey(db, survey_id)
 
 
@@ -191,7 +197,7 @@ async def update_group_question(
         gq.is_required = data.is_required
     if data.order is not None:
         gq.order = data.order
-    await db.flush()
+    await db.commit()
     return await get_survey(db, survey_id)
 
 
@@ -205,7 +211,7 @@ async def delete_group_question(
     """Removes the placement only — the Question stays in the library."""
     gq = await _get_group_question(db, group_id, group_question_id)
     await db.delete(gq)
-    await db.flush()
+    await db.commit()
     return await get_survey(db, survey_id)
 
 
@@ -274,7 +280,7 @@ async def delete_question(db: AsyncSession, question_id: uuid.UUID) -> None:
     if not question:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Question not found")
     await db.delete(question)
-    await db.flush()
+    await db.commit()
 
 
 async def add_option(db: AsyncSession, question_id: uuid.UUID, data: OptionCreate) -> QuestionOut:
